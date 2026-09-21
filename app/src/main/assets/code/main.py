@@ -1,45 +1,62 @@
+from http.server import BaseHTTPRequestHandler, HTTPServer
 import urllib.parse
-from flask import Flask, Response, request
-from flask_cors import CORS
-import requests
+import urllib.request
 
-app = Flask(__name__)
-# تفعيل الـ CORS للكل
-CORS(app)
+class ProxyHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        # التعامل مع طلبات OPTIONS و CORS Preflight
+        parsed_path = urllib.parse.urlparse(self.path)
+        if parsed_path.path == '/proxy':
+            query = urllib.parse.parse_qs(parsed_path.query)
+            target_url = query.get('url', [None])[0]
 
+            if not target_url:
+                self.send_response(400)
+                self.end_headers()
+                self.wfile.write(b'Missing url parameter')
+                return
 
-@app.route('/proxy', methods=['GET'])
-def proxy():
-    target_url = request.args.get('url')
+            try:
+                # تجهيز الطلب مع هيدرز المتصفح لتجاوز الحظر
+                req = urllib.request.Request(
+                    target_url,
+                    headers={
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                        'Accept-Language': 'ar,en-US;q=0.9,en;q=0.8'
+                    }
+                )
+                with urllib.request.urlopen(req, timeout=15) as response:
+                    content = response.read()
+                    
+                    self.send_response(200)
+                    # هيدرز الـ CORS الكاملة
+                    self.send_header('Access-Control-Allow-Origin', '*')
+                    self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
+                    self.send_header('Access-Control-Allow-Headers', '*')
+                    self.send_header('Content-Type', 'text/html; charset=utf-8')
+                    self.end_headers()
+                    self.wfile.write(content)
+            except Exception as e:
+                self.send_response(500)
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                self.wfile.write(f'Error: {str(e)}'.encode('utf-8'))
+        else:
+            self.send_response(404)
+            self.end_headers()
 
-    if not target_url:
-        return Response('الرابط مطلوب!', status=400)
-
-    # فك تشفير الرابط
-    target_url = urllib.parse.unquote(target_url)
-
-    # هيدرز تمويه كأنك متصفح حقيقي لتجاوز الحماية
-    headers = {
-        'User-Agent': (
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            ' (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
-        ),
-        'Accept': (
-            'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-        ),
-        'Accept-Language': 'ar,en-US;q=0.9,en;q=0.8',
-    }
-
-    try:
-        resp = requests.get(target_url, headers=headers, timeout=15)
-        return Response(
-            resp.content,
-            status=resp.status_code,
-            content_type='text/html; charset=utf-8',
-        )
-    except Exception as e:
-        return Response(f'حدث خطأ: {str(e)}', status=500)
-
+    def do_OPTIONS(self):
+        # السماح بطلبات CORS
+        self.send_response(200)
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', '*')
+        self.end_headers()
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8080)
+    # تشغيل السيرفر على البورت 8080
+    server_address = ('', 8080)
+    httpd = HTTPServer(server_address, ProxyHandler)
+    print("Proxy server running on port 8080...")
+    httpd.serve_forever()
