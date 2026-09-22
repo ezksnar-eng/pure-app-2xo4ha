@@ -1,87 +1,55 @@
+import os
+import sys
 import time
-import threading
-import urllib.parse
-import urllib.request
-import ssl
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import requests
+from flask import Flask, request, Response
+from flask_cors import CORS
+from gevent.pywsgi import WSGIServer
 
-class IntegratedProxyHandler(BaseHTTPRequestHandler):
-    def _set_headers(self, status=200):
-        self.send_response(status)
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', '*')
-        self.send_header('Content-Type', 'text/html; charset=utf-8')
-        self.end_headers()
+app = Flask(__name__)
+CORS(app)  # السماح بطلبات CORS لتفادي أي رفض بالصفحة
 
-    def do_OPTIONS(self):
-        self._set_headers(200)
+# الهيدرز للتمويه كأن الطلب جاي من متصفح حقيقي لتجاوز الحظر
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    'Accept-Language': 'ar-SA,ar;q=0.9,en-US;q=0.8,en;q=0.7',
+    'Referer': 'https://azorafly.com/'
+}
 
-    def do_GET(self):
-        parsed_path = urllib.parse.urlparse(self.path)
-        query = urllib.parse.parse_qs(parsed_path.query)
+@app.route('/', methods=['GET', 'POST', 'OPTIONS'])
+def proxy():
+    target_url = request.args.get('url')
+    
+    if not target_url:
+        return Response("⚠️ البروكسي الداخلي شغّال وجاهز لاستلام الطلبات...", status=200, mimetype='text/plain; charset=utf-8')
+
+    try:
+        # إرسال الطلب للموقع الأصلي
+        resp = requests.get(target_url, headers=HEADERS, timeout=15, verify=False)
         
-        target_url = query.get('url', [None])[0]
-        if not target_url and len(self.path) > 1:
-            target_url = self.path[1:].lstrip('/')
+        # استرجاع النتيجة وتمريرها للساحب
+        response = Response(resp.content, status=resp.status_code)
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['Content-Type'] = resp.headers.get('Content-Type', 'text/html; charset=utf-8')
+        return response
 
-        if not target_url:
-            self._set_headers(400)
-            self.wfile.write(b'Missing url parameter')
-            return
+    except Exception as e:
+        return Response(f"Error fetching site: {str(e)}", status=500)
 
-        if 'appassets.androidplatform.net' in target_url:
-            target_url = target_url.replace('https://appassets.androidplatform.net', 'https://azorafly.com')
-            target_url = target_url.replace('http://appassets.androidplatform.net', 'https://azorafly.com')
-
-        if not target_url.startswith('http://') and not target_url.startswith('https://'):
-            target_url = 'https://' + target_url
-
-        try:
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-
-            # إعداد opener يتتبع التوجيهات تلقائياً بدون توقف
-            opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
-            
-            req = urllib.request.Request(
-                target_url,
-                headers={
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                    'Referer': 'https://azorafly.com/'
-                }
-            )
-
-            with opener.open(req, timeout=20) as response:
-                content = response.read()
-                self._set_headers(200)
-                self.wfile.write(content)
-
-        except Exception as e:
-            self._set_headers(200)
-            self.wfile.write(f'Error fetching site: {str(e)}'.encode('utf-8'))
-
-    def log_message(self, format, *args):
-        return
-
-def run_proxy_server():
+def run_server_forever():
+    """حلقة تشغيل مستمرة بالخلفية لمنع إغلاق البروكسي نهائياً"""
     while True:
         try:
-            server_address = ('', 8080)
-            httpd = HTTPServer(server_address, IntegratedProxyHandler)
-            print("🚀 Proxy server running on port 8080...")
-            httpd.serve_forever()
+            print("🛡️ جاري تشغيل خادم البروكسي الداخلي على المنفذ 8080...")
+            # استخدام WSGIServer من Gevent لتحمل الـ 25 عامل والطلبات المتوازية بكفاءة
+            http_server = WSGIServer(('0.0.0.0', 8080), app)
+            http_server.serve_forever()
         except Exception as e:
-            print(f"⚠️ إعادة تشغيل البروكسي: {e}")
-            time.sleep(2)
+            print(f"⚠️ حدث انقطاع بالبروكسي: {e}. جاري إعادة التشغيل خلال ثانية...")
+            time.sleep(1)
 
 if __name__ == '__main__':
-    proxy_thread = threading.Thread(target=run_proxy_server, daemon=True)
-    proxy_thread.start()
-
-    print("✅ سيرفر البروكسي شغّال بكتفاء ذاتي بالخلفية بدون انقطاع.")
-    
-    while True:
-        time.sleep(1)
+    # إيقاف تحذيرات الشهادات الأمنية غير الموثقة
+    requests.packages.urllib3.disable_warnings()
+    run_server_forever()
