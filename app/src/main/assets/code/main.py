@@ -42,6 +42,9 @@ class IntegratedProxyHandler(BaseHTTPRequestHandler):
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
 
+            # إعداد opener يتتبع التوجيهات تلقائياً بدون توقف
+            opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
+            
             req = urllib.request.Request(
                 target_url,
                 headers={
@@ -51,7 +54,7 @@ class IntegratedProxyHandler(BaseHTTPRequestHandler):
                 }
             )
 
-            with urllib.request.urlopen(req, timeout=20, context=ctx) as response:
+            with opener.open(req, timeout=20) as response:
                 content = response.read()
                 self._set_headers(200)
                 self.wfile.write(content)
@@ -66,12 +69,12 @@ class IntegratedProxyHandler(BaseHTTPRequestHandler):
 def run_proxy_server():
     while True:
         try:
-            server_address = ('0.0.0.0', 8080)
+            server_address = ('', 8080)
             httpd = HTTPServer(server_address, IntegratedProxyHandler)
             print("🚀 Proxy server running on port 8080...")
             httpd.serve_forever()
         except Exception as e:
-            print(f"⚠️ إعادة تشغيل البروكسي تلقائياً بسبب: {e}")
+            print(f"⚠️ إعادة تشغيل البروكسي: {e}")
             time.sleep(2)
 
 if __name__ == '__main__':

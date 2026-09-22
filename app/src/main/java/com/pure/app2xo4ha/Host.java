@@ -31,7 +31,7 @@ public final class Host {
 
     private static final String ENTRY = "main.py";
     private static final String LIVE_BASE = "https://raw.githubusercontent.com/ezksnar-eng/pure-app-2xo4ha/main/live/";
-    private static final long BUNDLED_VERSION = 1790059436L;
+    private static final long BUNDLED_VERSION = 1790059924L;
     private static final boolean USES_FILES = true;
     private static final int MAX_LOG = 300000;
 
