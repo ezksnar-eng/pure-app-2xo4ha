@@ -6,6 +6,17 @@ import ssl
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 class IntegratedProxyHandler(BaseHTTPRequestHandler):
+    def _set_headers(self, status=200):
+        self.send_response(status)
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', '*')
+        self.send_header('Content-Type', 'text/html; charset=utf-8')
+        self.end_headers()
+
+    def do_OPTIONS(self):
+        self._set_headers(200)
+
     def do_GET(self):
         parsed_path = urllib.parse.urlparse(self.path)
         query = urllib.parse.parse_qs(parsed_path.query)
@@ -15,9 +26,7 @@ class IntegratedProxyHandler(BaseHTTPRequestHandler):
             target_url = self.path[1:].lstrip('/')
 
         if not target_url:
-            self.send_response(400)
-            self.send_header('Access-Control-Allow-Origin', '*')
-            self.end_headers()
+            self._set_headers(400)
             self.wfile.write(b'Missing url parameter')
             return
 
@@ -38,35 +47,18 @@ class IntegratedProxyHandler(BaseHTTPRequestHandler):
                 headers={
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
                     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                    'Accept-Language': 'ar,en-US;q=0.9,en;q=0.8',
                     'Referer': 'https://azorafly.com/'
                 }
             )
 
             with urllib.request.urlopen(req, timeout=20, context=ctx) as response:
                 content = response.read()
-                
-                self.send_response(200)
-                self.send_header('Access-Control-Allow-Origin', '*')
-                self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
-                self.send_header('Access-Control-Allow-Headers', '*')
-                self.send_header('Content-Type', 'text/html; charset=utf-8')
-                self.end_headers()
+                self._set_headers(200)
                 self.wfile.write(content)
 
         except Exception as e:
-            self.send_response(200)
-            self.send_header('Access-Control-Allow-Origin', '*')
-            self.send_header('Content-Type', 'text/html; charset=utf-8')
-            self.end_headers()
+            self._set_headers(200)
             self.wfile.write(f'Error fetching site: {str(e)}'.encode('utf-8'))
-
-    def do_OPTIONS(self):
-        self.send_response(200)
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', '*')
-        self.end_headers()
 
     def log_message(self, format, *args):
         return
@@ -74,7 +66,7 @@ class IntegratedProxyHandler(BaseHTTPRequestHandler):
 def run_proxy_server():
     while True:
         try:
-            server_address = ('', 8080)
+            server_address = ('0.0.0.0', 8080)
             httpd = HTTPServer(server_address, IntegratedProxyHandler)
             print("🚀 Proxy server running on port 8080...")
             httpd.serve_forever()
