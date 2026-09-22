@@ -1,14 +1,15 @@
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import time
+import threading
 import urllib.parse
 import urllib.request
 import ssl
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
-class ProxyHandler(BaseHTTPRequestHandler):
+class IntegratedProxyHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed_path = urllib.parse.urlparse(self.path)
         query = urllib.parse.parse_qs(parsed_path.query)
         
-        # استخراج الرابط من الـ query أو من المسار المباشر
         target_url = query.get('url', [None])[0]
         if not target_url and len(self.path) > 1:
             target_url = self.path[1:].lstrip('/')
@@ -20,7 +21,6 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self.wfile.write(b'Missing url parameter')
             return
 
-        # تصليح الروابط اللي تجي من تطبيق الأندرويد الداخلي
         if 'appassets.androidplatform.net' in target_url:
             target_url = target_url.replace('https://appassets.androidplatform.net', 'https://azorafly.com')
             target_url = target_url.replace('http://appassets.androidplatform.net', 'https://azorafly.com')
@@ -28,10 +28,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if not target_url.startswith('http://') and not target_url.startswith('https://'):
             target_url = 'https://' + target_url
 
-        print(f"[📡 Fetching] -> {target_url}")
-
         try:
-            # تجاوز فحص شهادات SSL حتى ما ينطي Internal Error 500
             ctx = ssl.create_default_context()
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
@@ -46,7 +43,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 }
             )
 
-            with urllib.request.urlopen(req, timeout=15, context=ctx) as response:
+            with urllib.request.urlopen(req, timeout=20, context=ctx) as response:
                 content = response.read()
                 
                 self.send_response(200)
@@ -58,8 +55,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 self.wfile.write(content)
 
         except Exception as e:
-            print(f"[❌ Error] -> {str(e)}")
-            self.send_response(200) # نرجع 200 ويا النص حتى ما يضرب البروكسي كراش 500
+            self.send_response(200)
             self.send_header('Access-Control-Allow-Origin', '*')
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.end_headers()
@@ -72,8 +68,25 @@ class ProxyHandler(BaseHTTPRequestHandler):
         self.send_header('Access-Control-Allow-Headers', '*')
         self.end_headers()
 
+    def log_message(self, format, *args):
+        return
+
+def run_proxy_server():
+    while True:
+        try:
+            server_address = ('', 8080)
+            httpd = HTTPServer(server_address, IntegratedProxyHandler)
+            print("🚀 Proxy server running on port 8080...")
+            httpd.serve_forever()
+        except Exception as e:
+            print(f"⚠️ إعادة تشغيل البروكسي تلقائياً بسبب: {e}")
+            time.sleep(2)
+
 if __name__ == '__main__':
-    server_address = ('', 8080)
-    httpd = HTTPServer(server_address, ProxyHandler)
-    print("🚀 Proxy server running on port 8080 (SSL Fixed)...")
-    httpd.serve_forever()
+    proxy_thread = threading.Thread(target=run_proxy_server, daemon=True)
+    proxy_thread.start()
+
+    print("✅ سيرفر البروكسي شغّال بكتفاء ذاتي بالخلفية بدون انقطاع.")
+    
+    while True:
+        time.sleep(1)
