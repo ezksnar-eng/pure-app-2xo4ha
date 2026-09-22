@@ -11,7 +11,7 @@ android {
         applicationId 'com.pure.app2xo4ha'
         minSdk 24
         targetSdk 34
-        versionCode 10
+        versionCode 11
         versionName '1.0.0'
         ndk {
             abiFilters "arm64-v8a", "armeabi-v7a"
@@ -54,12 +54,8 @@ chaquopy {
             install "requests"
             install "flask"
             install "flask-cors"
-            install "gevent"
             install "urllib3"
             install "beautifulsoup4"
-            install "lxml"
-            install "certifi"
-            install "chardet"
         }
     }
 }
