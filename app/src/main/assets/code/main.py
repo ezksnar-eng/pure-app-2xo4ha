@@ -1,24 +1,32 @@
 import sys
 import os
-import re
 import json
 import urllib.request
-import urllib.parse
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 PORT = 8080
 
 class ProxyHandler(BaseHTTPRequestHandler):
+    # إضافة معالجة طلبات OPTIONS الخاصة بالـ CORS
+    def do_OPTIONS(self):
+        self.send_response(200, "ok")
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'POST, GET, OPTIONS')
+        self.send_header("Access-Control-Allow-Headers", "X-Requested-With, Content-Type")
+        self.end_headers()
+
     def do_POST(self):
-        content_length = int(self.headers['Content-Length'])
+        content_length = int(self.headers.get('Content-Length', 0))
         post_data = self.rfile.read(content_length)
-        data = json.loads(post_data.decode('utf-8'))
         
+        try:
+            data = json.loads(post_data.decode('utf-8'))
+        except Exception:
+            data = {}
+
         target_url = data.get('url')
         if not target_url:
-            self.send_response(400)
-            self.end_headers()
-            self.wfile.write(json.dumps({'error': 'No URL provided'}).encode('utf-8'))
+            self._send_json({'error': 'No URL provided'}, status=400)
             return
 
         print(f"🔄 [PROXY] جاري جلب: {target_url}")
@@ -31,20 +39,17 @@ class ProxyHandler(BaseHTTPRequestHandler):
             req = urllib.request.Request(target_url, headers=headers)
             with urllib.request.urlopen(req, timeout=20) as response:
                 html_content = response.read().decode('utf-8', errors='ignore')
-                
-                self.send_response(200)
-                self.send_header('Content-Type', 'application/json')
-                self.end_headers()
-                
-                res_payload = {'status': 'success', 'html': html_content}
-                self.wfile.write(json.dumps(res_payload).encode('utf-8'))
+                self._send_json({'status': 'success', 'html': html_content})
         except Exception as e:
             print(f"❌ [PROXY] خطأ للجلب: {e}")
-            self.send_response(500)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            res_payload = {'status': 'error', 'message': str(e)}
-            self.wfile.write(json.dumps(res_payload).encode('utf-8'))
+            self._send_json({'status': 'error', 'message': str(e)}, status=500)
+
+    def _send_json(self, data, status=200):
+        self.send_response(status)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Access-Control-Allow-Origin', '*')  # التمرير الآمن بدون منع CORS
+        self.end_headers()
+        self.wfile.write(json.dumps(data).encode('utf-8'))
 
 def run_proxy():
     server_address = ('', PORT)
