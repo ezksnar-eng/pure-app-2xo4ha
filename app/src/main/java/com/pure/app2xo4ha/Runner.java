@@ -9,7 +9,7 @@ import java.io.File;
 
 final class Runner {
 
-    private static final int WEB_PORT = 0;
+    private static final int WEB_PORT = 8080;
 
     private Runner() {
     }
