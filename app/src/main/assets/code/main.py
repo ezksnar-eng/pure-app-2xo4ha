@@ -1,86 +1,92 @@
-import asyncio
-import itertools
-import logging
-import os
+"""
+proxy.py — بروكسي بسيط بملف وحيد
+====================================
+يستقبل GET /fetch?url=<TARGET_URL> ويرجّع HTML الصفحة المطلوبة بعد
+تمريرها عبر cloudscraper (تجاوز Cloudflare). مبني فقط على مكتبة
+Python القياسية (http.server) + مكتبة واحدة خارجية لا غنى عنها
+(cloudscraper) — بدون أي framework.
+
+التشغيل:
+    pip install cloudscraper
+    python proxy.py
+يشتغل افتراضياً على http://0.0.0.0:8000
+"""
+
+import json
 import threading
-from urllib.parse import parse_qs, urlparse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse, parse_qs
 
 import cloudscraper
 
-# إعداد الـ Logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-log = logging.getLogger("proxy-gateway")
+PORT = 8000
+REQUEST_TIMEOUT = 30
 
-# إعدادات الـ Scraper Pool
-POOL_SIZE = int(os.environ.get("SCRAPER_POOL_SIZE", "12"))
-REQUEST_TIMEOUT = int(os.environ.get("FETCH_TIMEOUT", "30"))
-
+# نسخة scraper منفصلة لكل thread (الـ ThreadingHTTPServer يفتح thread لكل طلب)
 _local = threading.local()
-_pool_counter = itertools.count()
 
 
-def _get_scraper() -> cloudscraper.CloudScraper:
+def get_scraper():
     if not hasattr(_local, "scraper"):
-        idx = next(_pool_counter) % POOL_SIZE
-        browsers = [
-            {"browser": "chrome", "platform": "windows", "mobile": False},
-            {"browser": "chrome", "platform": "darwin", "mobile": False},
-            {"browser": "firefox", "platform": "windows", "mobile": False},
-        ]
-        _local.scraper = cloudscraper.create_scraper(browser=browsers[idx % len(browsers)])
+        _local.scraper = cloudscraper.create_scraper(
+            browser={"browser": "chrome", "platform": "windows", "mobile": False}
+        )
     return _local.scraper
 
 
-def _sync_fetch(url: str) -> tuple[int, str]:
-    scraper = _get_scraper()
-    resp = scraper.get(url, timeout=REQUEST_TIMEOUT)
-    return resp.status_code, resp.text
+class ProxyHandler(BaseHTTPRequestHandler):
+    def log_message(self, fmt, *args):
+        print(f"[proxy] {self.address_string()} - {fmt % args}")
 
+    def _send(self, status: int, body: str, content_type="text/plain; charset=utf-8"):
+        encoded = body.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(encoded)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(encoded)
 
-# تطبيق WSGI/Web خفيف بدون الحاجة لـ FastAPI أو Uvicorn لتسهيل بناء الـ APK
-def application(environ, start_response):
-    path = environ.get("PATH_INFO", "")
-    query_string = environ.get("QUERY_STRING", "")
+    def do_GET(self):
+        parsed = urlparse(self.path)
 
-    if path == "/health":
-        start_response("200 OK", [("Content-Type", "application/json")])
-        return [b'{"status": "ok"}']
+        if parsed.path == "/health":
+            self._send(200, json.dumps({"status": "ok"}), "application/json")
+            return
 
-    elif path == "/fetch":
-        params = parse_qs(query_string)
-        url_list = params.get("url", [])
+        if parsed.path != "/fetch":
+            self._send(404, "not found")
+            return
 
-        if not url_list:
-            start_response("400 Bad Request", [("Content-Type", "text/plain")])
-            return [b"Missing url parameter"]
-
-        target_url = url_list[0]
-        if not target_url.startswith(("http://", "https://")):
-            start_response("400 Bad Request", [("Content-Type", "text/plain")])
-            return [b"url must start with http:// or https://"]
+        qs = parse_qs(parsed.query)
+        target = qs.get("url", [None])[0]
+        if not target or not target.startswith(("http://", "https://")):
+            self._send(400, "missing or invalid url param")
+            return
 
         try:
-            status_code, html = _sync_fetch(target_url)
-            if status_code != 200:
-                start_response("502 Bad Gateway", [("Content-Type", "text/plain")])
-                return [f"Upstream returned status code {status_code}".encode("utf-8")]
-
-            start_response("200 OK", [("Content-Type", "text/plain; charset=utf-8")])
-            return [html.encode("utf-8")]
+            scraper = get_scraper()
+            resp = scraper.get(target, timeout=REQUEST_TIMEOUT)
+            if resp.status_code == 200:
+                self._send(200, resp.text, "text/html; charset=utf-8")
+            else:
+                self._send(502, f"upstream status {resp.status_code}")
         except Exception as e:
-            log.warning("Fetch failed for %s: %s", target_url, e)
-            start_response("502 Bad Gateway", [("Content-Type", "text/plain")])
-            return [f"Upstream fetch failed: {e}".encode("utf-8")]
+            self._send(502, f"fetch error: {e}")
 
-    start_response("404 Not Found", [("Content-Type", "text/plain")])
-    return [b"Not Found"]
+    def do_OPTIONS(self):
+        # لتسهيل النداء من صفحة HTML تشتغل بمتصفح (CORS preflight)
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "*")
+        self.end_headers()
 
-
-app = application
 
 if __name__ == "__main__":
-    from wsgiref.simple_server import make_server
-
-    log.info("Starting proxy gateway server on port 8000...")
-    httpd = make_server("0.0.0.0", 8000, application)
-    httpd.serve_forever()
+    server = ThreadingHTTPServer(("0.0.0.0", PORT), ProxyHandler)
+    print(f"proxy.py يشتغل على http://0.0.0.0:{PORT}  (جرب: /fetch?url=https://example.com)")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        server.shutdown()
