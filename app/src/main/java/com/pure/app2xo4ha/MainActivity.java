@@ -26,7 +26,7 @@ import java.net.Socket;
 public class MainActivity extends Activity implements Host.Listener {
 
     private static final String STATUS_COLOR = "#c81466";
-    private static final int WEB_PORT = 8080;
+    private static final int WEB_PORT = 0;
     private static final boolean BG = false;
 
     private FrameLayout frame;
