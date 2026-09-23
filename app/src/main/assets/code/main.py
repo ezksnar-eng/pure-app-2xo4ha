@@ -1,37 +1,17 @@
-"""
-proxy-gateway
-=============
-Lightweight async HTTP proxy that fetches a target URL through
-cloudscraper (Cloudflare/anti-bot bypass) and returns the raw HTML.
-
-Run:
-    uvicorn main:app --host 0.0.0.0 --port 8000 --workers 1
-
-Note: cloudscraper's underlying session is NOT safe to share across
-threads while mid-request in all versions, so this service keeps a
-small pool of scraper instances (one per worker slot) instead of one
-global instance hit by hundreds of concurrent callers.
-"""
-
-from __future__ import annotations
-
 import asyncio
 import itertools
 import logging
 import os
 import threading
+from urllib.parse import parse_qs, urlparse
 
 import cloudscraper
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import PlainTextResponse
 
+# إعداد الـ Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("proxy-gateway")
 
-app = FastAPI(title="proxy-gateway")
-
-# Pool size: how many independent cloudscraper sessions to rotate
-# across. Each is its own TLS/header fingerprint session.
+# إعدادات الـ Scraper Pool
 POOL_SIZE = int(os.environ.get("SCRAPER_POOL_SIZE", "12"))
 REQUEST_TIMEOUT = int(os.environ.get("FETCH_TIMEOUT", "30"))
 
@@ -40,10 +20,6 @@ _pool_counter = itertools.count()
 
 
 def _get_scraper() -> cloudscraper.CloudScraper:
-    """One cloudscraper session per worker thread (threads are reused
-    by the default asyncio thread-pool executor), rotating browser
-    fingerprints across a small pool for basic header diversity.
-    """
     if not hasattr(_local, "scraper"):
         idx = next(_pool_counter) % POOL_SIZE
         browsers = [
@@ -61,23 +37,50 @@ def _sync_fetch(url: str) -> tuple[int, str]:
     return resp.status_code, resp.text
 
 
-@app.get("/fetch", response_class=PlainTextResponse)
-async def fetch(url: str = Query(..., description="Target URL to fetch through cloudscraper")):
-    if not url.startswith(("http://", "https://")):
-        raise HTTPException(status_code=400, detail="url must start with http:// or https://")
+# تطبيق WSGI/Web خفيف بدون الحاجة لـ FastAPI أو Uvicorn لتسهيل بناء الـ APK
+def application(environ, start_response):
+    path = environ.get("PATH_INFO", "")
+    query_string = environ.get("QUERY_STRING", "")
 
-    try:
-        status_code, html = await asyncio.to_thread(_sync_fetch, url)
-    except Exception as e:
-        log.warning("Fetch failed for %s: %s", url, e)
-        raise HTTPException(status_code=502, detail=f"upstream fetch failed: {e}")
+    if path == "/health":
+        start_response("200 OK", [("Content-Type", "application/json")])
+        return [b'{"status": "ok"}']
 
-    if status_code != 200:
-        raise HTTPException(status_code=502, detail=f"upstream returned {status_code}")
+    elif path == "/fetch":
+        params = parse_qs(query_string)
+        url_list = params.get("url", [])
 
-    return html
+        if not url_list:
+            start_response("400 Bad Request", [("Content-Type", "text/plain")])
+            return [b"Missing url parameter"]
+
+        target_url = url_list[0]
+        if not target_url.startswith(("http://", "https://")):
+            start_response("400 Bad Request", [("Content-Type", "text/plain")])
+            return [b"url must start with http:// or https://"]
+
+        try:
+            status_code, html = _sync_fetch(target_url)
+            if status_code != 200:
+                start_response("502 Bad Gateway", [("Content-Type", "text/plain")])
+                return [f"Upstream returned status code {status_code}".encode("utf-8")]
+
+            start_response("200 OK", [("Content-Type", "text/plain; charset=utf-8")])
+            return [html.encode("utf-8")]
+        except Exception as e:
+            log.warning("Fetch failed for %s: %s", target_url, e)
+            start_response("502 Bad Gateway", [("Content-Type", "text/plain")])
+            return [f"Upstream fetch failed: {e}".encode("utf-8")]
+
+    start_response("404 Not Found", [("Content-Type", "text/plain")])
+    return [b"Not Found"]
 
 
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
+app = application
+
+if __name__ == "__main__":
+    from wsgiref.simple_server import make_server
+
+    log.info("Starting proxy gateway server on port 8000...")
+    httpd = make_server("0.0.0.0", 8000, application)
+    httpd.serve_forever()
