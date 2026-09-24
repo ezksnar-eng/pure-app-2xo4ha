@@ -1,92 +1,54 @@
-"""
-proxy.py — بروكسي بسيط بملف وحيد
-====================================
-يستقبل GET /fetch?url=<TARGET_URL> ويرجّع HTML الصفحة المطلوبة بعد
-تمريرها عبر cloudscraper (تجاوز Cloudflare). مبني فقط على مكتبة
-Python القياسية (http.server) + مكتبة واحدة خارجية لا غنى عنها
-(cloudscraper) — بدون أي framework.
+import time
+import requests
+import urllib3
+from flask import Flask, request, Response
+from flask_cors import CORS
 
-التشغيل:
-    pip install cloudscraper
-    python proxy.py
-يشتغل افتراضياً على http://0.0.0.0:8000
-"""
+# إيقاف تحذيرات شهادات SSL غير الموثقة
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-import json
-import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs
+app = Flask(__name__)
+CORS(app)  # تفعيل CORS لتجاوز القيود بين التطبيقين
 
-import cloudscraper
+# هيدرز للتمويه كأن الطلب جاي من متصفح حقيقي لتجاوز حظر أزورا
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    'Accept-Language': 'ar-SA,ar;q=0.9,en-US;q=0.8,en;q=0.7',
+    'Referer': 'https://azorafly.com/'
+}
 
-PORT = 8000
-REQUEST_TIMEOUT = 30
+@app.route('/', methods=['GET', 'POST', 'OPTIONS'])
+def proxy():
+    target_url = request.args.get('url')
+    
+    # صفحة التحقق من عمل البروكسي بالخلفية
+    if not target_url:
+        return Response("🛡️ سيرفر البروكسي الداخلي شغال بالخلفية وجاهز 100%!", status=200, mimetype='text/plain; charset=utf-8')
 
-# نسخة scraper منفصلة لكل thread (الـ ThreadingHTTPServer يفتح thread لكل طلب)
-_local = threading.local()
-
-
-def get_scraper():
-    if not hasattr(_local, "scraper"):
-        _local.scraper = cloudscraper.create_scraper(
-            browser={"browser": "chrome", "platform": "windows", "mobile": False}
-        )
-    return _local.scraper
-
-
-class ProxyHandler(BaseHTTPRequestHandler):
-    def log_message(self, fmt, *args):
-        print(f"[proxy] {self.address_string()} - {fmt % args}")
-
-    def _send(self, status: int, body: str, content_type="text/plain; charset=utf-8"):
-        encoded = body.encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(encoded)))
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
-        self.wfile.write(encoded)
-
-    def do_GET(self):
-        parsed = urlparse(self.path)
-
-        if parsed.path == "/health":
-            self._send(200, json.dumps({"status": "ok"}), "application/json")
-            return
-
-        if parsed.path != "/fetch":
-            self._send(404, "not found")
-            return
-
-        qs = parse_qs(parsed.query)
-        target = qs.get("url", [None])[0]
-        if not target or not target.startswith(("http://", "https://")):
-            self._send(400, "missing or invalid url param")
-            return
-
-        try:
-            scraper = get_scraper()
-            resp = scraper.get(target, timeout=REQUEST_TIMEOUT)
-            if resp.status_code == 200:
-                self._send(200, resp.text, "text/html; charset=utf-8")
-            else:
-                self._send(502, f"upstream status {resp.status_code}")
-        except Exception as e:
-            self._send(502, f"fetch error: {e}")
-
-    def do_OPTIONS(self):
-        # لتسهيل النداء من صفحة HTML تشتغل بمتصفح (CORS preflight)
-        self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "*")
-        self.end_headers()
-
-
-if __name__ == "__main__":
-    server = ThreadingHTTPServer(("0.0.0.0", PORT), ProxyHandler)
-    print(f"proxy.py يشتغل على http://0.0.0.0:{PORT}  (جرب: /fetch?url=https://example.com)")
     try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        server.shutdown()
+        # إرسال الطلب للموقع الأصلي وتجاوز الحظر
+        resp = requests.get(target_url, headers=HEADERS, timeout=15, verify=False)
+        
+        # إرجاع النتيجة للتطبيق الساحب
+        response = Response(resp.content, status=resp.status_code)
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['Content-Type'] = resp.headers.get('Content-Type', 'text/html; charset=utf-8')
+        return response
+
+    except Exception as e:
+        return Response(f"Error fetching site: {str(e)}", status=500)
+
+def run_server_forever():
+    """حلقة تشغيل مستمرة بالخلفية تعيد تشغيل السيرفر فوراً لو حدث أي انقطاع"""
+    while True:
+        try:
+            print("⚡ جاري تشغيل سيرفر البروكسي على المنفذ 8080...")
+            # استخدام سيرفر Flask المدمج القياسي لتفادي المشاكل مع Chaquopy
+            app.run(host='0.0.0.0', port=8080, threaded=True, debug=False)
+        except Exception as e:
+            print(f"⚠️ إعادة تشغيل السيرفر تلقائياً بالخلفية: {e}")
+            time.sleep(1)
+
+if __name__ == '__main__':
+    run_server_forever()
